@@ -24,6 +24,7 @@ export class ColorPalette extends PDFPlusComponent {
     displayTextFormatMenuEl: HTMLElement | null;
     writeFileButtonEl: HTMLElement | null;
     cropButtonEl: HTMLElement | null;
+    stickyNoteButtonEl: HTMLElement | null;
     statusContainerEl: HTMLElement | null;
     statusEl: HTMLElement | null;
     importButtonEl: HTMLElement | null;
@@ -46,6 +47,7 @@ export class ColorPalette extends PDFPlusComponent {
         this.displayTextFormatMenuEl = null;
         this.writeFileButtonEl = null;
         this.cropButtonEl = null;
+        this.stickyNoteButtonEl = null;
         this.statusContainerEl = null;
         this.statusEl = null;
         this.importButtonEl = null;
@@ -79,6 +81,7 @@ export class ColorPalette extends PDFPlusComponent {
         this.displayTextFormatMenuEl = this.addDisplayTextFormatDropdown(this.paletteEl);
 
         this.addCropButton(this.paletteEl);
+        this.addStickyNoteButton(this.paletteEl);
 
         if (this.child.isFileExternal) {
             this.addImportButton(this.paletteEl);
@@ -96,6 +99,8 @@ export class ColorPalette extends PDFPlusComponent {
 
     onunload() {
         this.spacerEl?.remove();
+        this.cropButtonEl?.remove();
+        this.stickyNoteButtonEl?.remove();
         if (this.paletteEl) {
             this.paletteEl.remove();
             ColorPalette.elInstanceMap.delete(this.paletteEl);
@@ -587,6 +592,93 @@ export class ColorPalette extends PDFPlusComponent {
         };
 
         toggle();
+    }
+
+    addStickyNoteButton(paletteEl: HTMLElement) {
+        if (!this.lib.isEditable(this.child)) return;
+
+        this.stickyNoteButtonEl = paletteEl.createDiv('clickable-icon pdf-plus-sticky-note-button', (el) => {
+            setIcon(el, 'lucide-sticky-note');
+            setTooltip(el, 'Add sticky note (click on PDF)');
+
+            el.addEventListener('click', () => {
+                this.toggleStickyNoteMode();
+            });
+        });
+    }
+
+    toggleStickyNoteMode() {
+        const buttonEl = this.stickyNoteButtonEl;
+        if (!buttonEl) return;
+
+        const child = this.child;
+        const viewerEl = child.pdfViewer.dom?.viewerEl;
+        if (!viewerEl) return;
+
+        const isActive = buttonEl.hasClass('is-active');
+
+        if (isActive) {
+            // Deactivate
+            buttonEl.removeClass('is-active');
+            viewerEl.removeClass('pdf-plus-sticky-note-mode');
+            return;
+        }
+
+        // Activate
+        buttonEl.addClass('is-active');
+        viewerEl.addClass('pdf-plus-sticky-note-mode');
+
+        const onPointerDown = async (evt: PointerEvent) => {
+            const target = evt.target;
+            if (!(target instanceof HTMLElement)) return;
+
+            const pageEl = target.closest<HTMLElement>('div.page[data-page-number]');
+            if (!pageEl) return;
+
+            const pageNumber = pageEl.dataset.pageNumber;
+            if (!pageNumber) return;
+
+            const { x, y } = getEventCoords(evt);
+            const colorName = this.selectedColorName;
+
+            const { PDFStickyNoteModal } = await import('modals');
+            new PDFStickyNoteModal(
+                this.plugin,
+                child,
+                +pageNumber,
+                x,
+                y,
+                colorName,
+                async (contents) => {
+                    await this.lib.highlight.writeFile.addStickyNoteAtPosition(
+                        child,
+                        +pageNumber,
+                        x,
+                        y,
+                        contents,
+                        colorName ?? undefined
+                    );
+                }
+            ).open();
+
+            // Deactivate after placing
+            buttonEl.removeClass('is-active');
+            viewerEl.removeClass('pdf-plus-sticky-note-mode');
+            viewerEl.removeEventListener('pointerdown', onPointerDown);
+            viewerEl.doc.removeEventListener('keydown', onKeyDown);
+        };
+
+        const onKeyDown = (evt: KeyboardEvent) => {
+            if (evt.key === 'Escape') {
+                buttonEl.removeClass('is-active');
+                viewerEl.removeClass('pdf-plus-sticky-note-mode');
+                viewerEl.removeEventListener('pointerdown', onPointerDown);
+                viewerEl.doc.removeEventListener('keydown', onKeyDown);
+            }
+        };
+
+        this.registerDomEvent(viewerEl, 'pointerdown', onPointerDown);
+        this.registerDomEvent(viewerEl.doc, 'keydown', onKeyDown);
     }
 
     setStatus(text: string, durationMs: number) {

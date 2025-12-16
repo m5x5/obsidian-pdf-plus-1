@@ -31,6 +31,20 @@ export const patchPDFView = (plugin: PDFPlus): boolean => {
                         ret.left = pdfViewer._location?.left;
                         ret.top = pdfViewer._location?.top;
                         ret.zoom = pdfViewer.currentScale;
+
+                        if ((ret.left === undefined || ret.top === undefined) && child?.pdfViewer?.dom?.viewerContainerEl) {
+                            const pageView = pdfViewer.getPageView(ret.page - 1);
+                            if (pageView && pageView.div && pageView.viewport) {
+                                const container = child.pdfViewer.dom.viewerContainerEl;
+                                const rect = pageView.div.getBoundingClientRect();
+                                const containerRect = container.getBoundingClientRect();
+                                const offsetX = containerRect.left - rect.left;
+                                const offsetY = containerRect.top - rect.top;
+                                const pt = pageView.viewport.convertToPdfPoint(offsetX, offsetY);
+                                ret.left = pt[0];
+                                ret.top = pt[1];
+                            }
+                        }
                     }
                     return ret;
                 };

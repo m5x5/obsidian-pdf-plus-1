@@ -1,9 +1,10 @@
-import { Setting, TFile, TextAreaComponent, MarkdownRenderer, RGB, ColorComponent, DropdownComponent } from 'obsidian';
+import { Setting, TFile, TextAreaComponent, MarkdownRenderer, RGB, ColorComponent, DropdownComponent, Notice } from 'obsidian';
 
 import PDFPlus from 'main';
 import { getModifierNameInPlatform, hexToRgb, hookInternalLinkMouseEventHandlers, rgbToHex } from 'utils';
 import { PDFDict } from '@cantoo/pdf-lib';
 import { PDFPlusModal } from 'modals';
+import { PDFViewerChild } from 'typings';
 
 
 class PDFAnnotationModal extends PDFPlusModal {
@@ -30,7 +31,8 @@ type PDFAnnotationDict = {
 export class PDFAnnotationEditModal extends PDFAnnotationModal {
     static readonly supportedSubtypes = [
         'Highlight', 'Underline', 'Squiggly', 'StrikeOut', // text markup annotations
-        'Link'
+        'Link',
+        'Text' // sticky notes
     ] as const;
 
     supportedKeys: Partial<Array<keyof PDFAnnotationDict>>;
@@ -51,6 +53,8 @@ export class PDFAnnotationEditModal extends PDFAnnotationModal {
     static forSubtype(subtype: typeof PDFAnnotationEditModal.supportedSubtypes[number], ...args: ConstructorParameters<typeof PDFAnnotationModal>): PDFAnnotationEditModal {
         if (subtype === 'Link') {
             return PDFAnnotationEditModal.forLinkAnnotation(...args);
+        } else if (subtype === 'Text') {
+            return PDFAnnotationEditModal.forTextAnnotation(...args);
         } else {
             return PDFAnnotationEditModal.forTextMarkupAnnotation(...args);
         }
@@ -66,6 +70,13 @@ export class PDFAnnotationEditModal extends PDFAnnotationModal {
     static forLinkAnnotation(...args: ConstructorParameters<typeof PDFAnnotationModal>): PDFAnnotationEditModal {
         return new PDFAnnotationEditModal(
             { color: true, borderWidth: true },
+            ...args
+        );
+    }
+
+    static forTextAnnotation(...args: ConstructorParameters<typeof PDFAnnotationModal>): PDFAnnotationEditModal {
+        return new PDFAnnotationEditModal(
+            { color: true, contents: true },
             ...args
         );
     }
@@ -447,5 +458,106 @@ export class PDFAnnotationDeleteModal extends PDFAnnotationModal {
 
     deleteAnnotation() {
         this.lib.highlight.writeFile.deleteAnnotation(this.file, this.page, this.id);
+    }
+}
+
+export class PDFStickyNoteModal extends PDFPlusModal {
+    child: PDFViewerChild;
+    pageNumber: number;
+    screenX: number;
+    screenY: number;
+    colorName: string | null;
+    onSubmit: (contents: string) => void;
+
+    textarea: TextAreaComponent | null = null;
+    previewEl: HTMLElement | null = null;
+    showPreview = false;
+
+    constructor(
+        plugin: PDFPlus,
+        child: PDFViewerChild,
+        pageNumber: number,
+        screenX: number,
+        screenY: number,
+        colorName: string | null,
+        onSubmit: (contents: string) => void
+    ) {
+        super(plugin);
+        this.child = child;
+        this.pageNumber = pageNumber;
+        this.screenX = screenX;
+        this.screenY = screenY;
+        this.colorName = colorName;
+        this.onSubmit = onSubmit;
+        this.containerEl.addClass('pdf-plus-sticky-note-modal');
+    }
+
+    onOpen() {
+        super.onOpen();
+        this.titleEl.setText('Create sticky note');
+
+        new Setting(this.contentEl)
+            .setName('Note content')
+            .setDesc('Markdown supported')
+            .addTextArea((text) => {
+                this.textarea = text;
+                text.inputEl.rows = 8;
+                text.inputEl.cols = 50;
+                text.setPlaceholder('Enter your note...');
+                text.inputEl.focus();
+                text.onChange((value) => {
+                    if (this.showPreview) {
+                        this.updatePreview();
+                    }
+                });
+            });
+
+        new Setting(this.contentEl)
+            .setName('Preview markdown')
+            .addToggle((toggle) => {
+                toggle.setValue(false)
+                    .onChange((value) => {
+                        this.showPreview = value;
+                        this.updatePreview();
+                    });
+            });
+
+        this.previewEl = this.contentEl.createDiv('pdf-plus-sticky-note-preview markdown-preview-view');
+        this.previewEl.style.display = 'none';
+
+        const buttonContainer = this.contentEl.createDiv('modal-button-container');
+        new Setting(buttonContainer)
+            .addButton((button) => {
+                button.setButtonText('Create').setCta().onClick(() => this.submit());
+            })
+            .addButton((button) => {
+                button.setButtonText('Cancel').onClick(() => this.close());
+            })
+            .setClass('no-border');
+
+        this.scope.register(['Mod'], 'Enter', () => this.submit());
+    }
+
+    updatePreview() {
+        if (!this.previewEl || !this.textarea) return;
+
+        if (this.showPreview) {
+            const content = this.textarea.getValue();
+            this.previewEl.empty();
+            this.previewEl.style.display = 'block';
+            MarkdownRenderer.render(this.app, content, this.previewEl, '', this.component);
+        } else {
+            this.previewEl.style.display = 'none';
+        }
+    }
+
+    submit() {
+        const contents = this.textarea?.getValue() || '';
+        if (!contents.trim()) {
+            new Notice('Note content cannot be empty');
+            return;
+        }
+        this.onSubmit(contents);
+        this.close();
     }
 }

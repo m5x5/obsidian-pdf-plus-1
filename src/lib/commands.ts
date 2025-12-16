@@ -1,10 +1,10 @@
-import { Command, MarkdownView, Notice, TFile, WorkspaceLeaf, normalizePath, setIcon } from 'obsidian';
+import { Command, MarkdownView, Notice, TFile, WorkspaceLeaf, normalizePath, setIcon, getLinkpath, parseLinktext } from 'obsidian';
 
 import { PDFPlusLibSubmodule } from './submodule';
 import { PDFComposerModal, PDFCreateModal, PDFPageDeleteModal, PDFPageLabelEditModal, PDFOutlineTitleModal, DummyFileModal } from 'modals';
 import { PDFOutlines } from './outlines';
 import { TemplateProcessor } from 'template';
-import { getObsidianDebugInfo, getStyleSettings, parsePDFSubpath } from 'utils';
+import { getObsidianDebugInfo, getStyleSettings, parsePDFSubpath, getTextLayerInfo } from 'utils';
 import { DestArray } from 'typings';
 import { PDFPlusSettingTab } from 'settings';
 import { SidebarView } from 'pdfjs-enums';
@@ -20,6 +20,11 @@ export class PDFPlusCommands extends PDFPlusLibSubmodule {
         super(...args);
 
         const commandArray: Command[] = [
+            {
+                id: 'add-link-to-selection',
+                name: 'Add link to selection',
+                checkCallback: (checking) => this.addLinkToSelection(checking)
+            },
             {
                 id: 'copy-link-to-selection',
                 name: 'Copy link to selection or annotation',
@@ -1075,5 +1080,146 @@ export class PDFPlusCommands extends PDFPlusLibSubmodule {
         if (!checking) showContextMenuAtSelection(this.plugin, child, selection);
 
         return true;
+    }
+
+    addLinkToSelection(checking: boolean) {
+        const selection = activeWindow.getSelection();
+        const info = this.lib.copyLink.getPageAndTextRangeFromSelection(selection);
+
+        if (!info || !info.selection) return false;
+
+        if (!checking) {
+            const { page, selection: { beginIndex, beginOffset, endIndex, endOffset } } = info;
+            const pageEl = this.lib.getPageElFromSelection(selection!);
+            if (!pageEl) return;
+
+            const child = this.lib.getPDFViewerChildAssociatedWithNode(pageEl);
+            if (!child || !child.file) return;
+
+            const pageView = child.getPage(page);
+            const textLayer = pageView.textLayer;
+            if (!textLayer) return;
+
+            const textLayerInfo = getTextLayerInfo(textLayer);
+            if (!textLayerInfo) return;
+
+            const rects = this.lib.highlight.geometry.computeMergedHighlightRects(
+                textLayerInfo, beginIndex, beginOffset, endIndex, endOffset
+            ).map(r => r.rect);
+
+            if (rects.length === 0) return;
+
+            const palette = this.lib.getColorPalette();
+            const colorName = palette?.selectedColorName ?? undefined;
+
+            // Use unified destination resolution (async)
+            const view = this.lib.getPDFViewFromChild(child);
+            this.resolveDestinationForLinkToSelection(
+                child.file,
+                view,
+                true // fallback to current view
+            ).then((resolved) => {
+                if (!resolved) {
+                    new Notice(`${this.plugin.manifest.name}: No link destination found. Copy a link or ensure PDF view is available.`);
+                    return;
+                }
+
+                const { dest, source } = resolved;
+
+                this.lib.highlight.writeFile.addLinkAnnotation(child.file!, page, rects, dest, colorName)
+                    .then(() => {
+                        const sourceMsg = source === 'lastCopied' ? 'copied PDF link' :
+                                         source === 'clipboard' ? 'clipboard' : 'current view';
+                        new Notice(`${this.plugin.manifest.name}: Link added from ${sourceMsg}`);
+                    })
+                    .catch((err: Error) => {
+                        new Notice(`${this.plugin.manifest.name}: Failed to add link - ${err.message}`);
+                        console.error(err);
+                    });
+            }).catch((err: Error) => {
+                new Notice(`${this.plugin.manifest.name}: Failed to resolve destination - ${err.message}`);
+                console.error(err);
+            });
+        }
+
+        return true;
+    }
+
+    /**
+     * Resolves the destination for "Add link to selection" feature.
+     * Priority: 1) lastCopiedDestInfo, 2) clipboard, 3) current view (if fallbackToView=true)
+     * Automatically converts cross-document DestArray to wikilink.
+     */
+    async resolveDestinationForLinkToSelection(
+        currentFile: TFile,
+        currentView?: any,
+        fallbackToView: boolean = false
+    ): Promise<{ dest: DestArray | string, source: 'lastCopied' | 'clipboard' | 'currentView' } | null> {
+        // 1. Check lastCopiedDestInfo first
+        if (this.plugin.lastCopiedDestInfo) {
+            const destInfo = this.plugin.lastCopiedDestInfo;
+            const isCrossDocument = destInfo.file !== currentFile;
+
+            if ('destArray' in destInfo) {
+                const destArray = destInfo.destArray;
+
+                if (isCrossDocument) {
+                    // Cross-document: convert to wikilink
+                    const subpath = this.lib.destArrayToSubpath(destArray);
+                    const dest = `[[${destInfo.file.path}${subpath}]]`;
+                    return { dest, source: 'lastCopied' };
+                } else {
+                    // Same document: use DestArray directly
+                    return { dest: destArray, source: 'lastCopied' };
+                }
+            } else if ('destName' in destInfo) {
+                // Named destination - would need to resolve, but for cross-doc convert to wikilink
+                if (isCrossDocument) {
+                    // For cross-document named destinations, we'd need to resolve first
+                    // This is an edge case - for now, fall through to clipboard
+                    console.warn('[PDFPlus] Cross-document named destination not yet supported');
+                } else {
+                    // Same document named destination - needs resolution but that's handled elsewhere
+                    // Fall through to clipboard for now
+                }
+            }
+        }
+
+        // 2. Check clipboard
+        try {
+            const clipboardText = await navigator.clipboard.readText();
+            if (clipboardText && clipboardText.trim()) {
+                const trimmed = clipboardText.trim();
+
+                // Wikilink format
+                if (trimmed.startsWith('[[') && trimmed.endsWith(']]')) {
+                    return { dest: trimmed, source: 'clipboard' };
+                }
+
+                // Try to parse as linktext
+                try {
+                    const parsed = parseLinktext(trimmed);
+                    const dest = parsed.path + (parsed.subpath || '');
+                    return { dest, source: 'clipboard' };
+                } catch (e) {
+                    // Use as-is (might be a URL)
+                    return { dest: trimmed, source: 'clipboard' };
+                }
+            }
+        } catch (e) {
+            // Clipboard read failed
+            console.warn('[PDFPlus] Failed to read clipboard:', e);
+        }
+
+        // 3. Fallback to current view (if enabled)
+        if (fallbackToView && currentView) {
+            const state = currentView.getState();
+            const dest = this.lib.viewStateToDestArray(state, false);
+            if (dest) {
+                return { dest, source: 'currentView' };
+            }
+        }
+
+        return null;
     }
 }

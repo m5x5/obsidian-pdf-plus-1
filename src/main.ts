@@ -14,6 +14,7 @@ import { InstallerVersionModal } from 'modals';
 import { PDFExternalLinkPostProcessor, PDFInternalLinkPostProcessor, PDFOutlineItemPostProcessor, PDFThumbnailItemPostProcessor } from 'post-process';
 import { BibliographyManager } from 'bib';
 import { DataviewInlineFieldsModal, withFilesWithInlineFields } from 'lib/dataview';
+import { ShiftHoverManager } from 'lib/shift-hover-manager';
 
 
 export default class PDFPlus extends Plugin {
@@ -87,6 +88,8 @@ export default class PDFPlus extends Plugin {
 	obsidianHasTextSelectionBug: boolean;
 	requiresDataviewInlineFieldsMigration = false;
 	isDebugMode: boolean = false;
+	/** Manages shift+hover behavior for link annotations - highlights target annotations when shift key is held while hovering over links. */
+	shiftHoverManager: ShiftHoverManager;
 
 	async onload() {
 		this.checkVersion();
@@ -100,6 +103,8 @@ export default class PDFPlus extends Plugin {
 
 		this.domManager = this.addChild(new DomManager(this));
 		this.domManager.registerCalloutRenderer();
+
+		this.shiftHoverManager = this.addChild(new ShiftHoverManager(this));
 
 		this.registerRibbonIcons();
 

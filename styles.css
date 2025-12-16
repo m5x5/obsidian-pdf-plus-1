@@ -692,3 +692,42 @@ body.pdf-plus-vim-hint-inverted {
     --pdf-plus-vim-hint-color: var(--text-on-accent);
     --pdf-plus-vim-hint-background-color: hsl(var(--accent-h), var(--accent-s), var(--accent-l));
 }
+
+/* Sticky note styles */
+.pdf-plus-sticky-note-mode {
+    cursor: crosshair !important;
+}
+
+.pdf-plus-sticky-note-button.is-active {
+    background-color: var(--interactive-accent);
+    color: var(--text-on-accent);
+}
+
+.pdf-plus-sticky-note-modal .modal-content {
+    max-width: 600px;
+}
+
+.pdf-plus-sticky-note-preview {
+    margin-top: 1em;
+    padding: 1em;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+/* Shift+hover target highlight */
+.annotationLayer section[data-annotation-id].shift-hover-target-highlight {
+    outline: 3px solid var(--interactive-accent) !important;
+    outline-offset: 2px;
+    background-color: var(--interactive-accent-hover) !important;
+    opacity: 0.85 !important;
+    z-index: 1000;
+    transition: all 0.1s ease-in-out;
+    box-shadow: 0 0 8px var(--interactive-accent);
+}
+
+/* Make highlight more visible by slightly dimming annotation content */
+.annotationLayer section[data-annotation-id].shift-hover-target-highlight > * {
+    opacity: 0.9;
+}

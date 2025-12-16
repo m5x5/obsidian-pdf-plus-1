@@ -3,7 +3,7 @@ import { around } from 'monkey-around';
 import { PDFDocumentProxy } from 'pdfjs-dist';
 
 import PDFPlus from 'main';
-import { PDFAnnotationDeleteModal, PDFAnnotationEditModal } from 'modals';
+import { PDFAnnotationDeleteModal, PDFAnnotationEditModal, PDFAnnotationConnectionsModal } from 'modals';
 import { onContextMenu, onOutlineContextMenu, onThumbnailContextMenu, showContextMenu } from 'context-menu';
 import { registerAnnotationPopupDrag, registerOutlineDrag, registerThumbnailDrag } from 'drag';
 import { PDFInternalLinkPostProcessor, PDFOutlineItemPostProcessor, PDFThumbnailItemPostProcessor, PDFExternalLinkPostProcessor } from 'post-process';
@@ -325,6 +325,12 @@ const patchPDFViewerChild = (plugin: PDFPlus, child: PDFViewerChild) => {
         },
         loadFile(old) {
             return async function (this: PDFViewerChild, file: TFile, subpath?: string) {
+                console.log('[PDFPlus] ========== PDFViewerChild.loadFile() called ==========');
+                console.log('[PDFPlus] File:', file?.path);
+                console.log('[PDFPlus] Subpath:', subpath);
+                console.log('[PDFPlus] Unloaded:', this.unloaded);
+                console.log('[PDFPlus] Has PDF viewer:', !!this.pdfViewer);
+                
                 // Without this, if the plugin is loaded with a PDF embed open, `loadFile` seems to be called
                 // before `load` (in the second half of PDFViewerComponent.onload, the callback functions in `this.next`
                 // are called and `child.loadFile()` is registered as one of them in `PDFViewerComponent.prototype.loadFile`.
@@ -335,6 +341,7 @@ const patchPDFViewerChild = (plugin: PDFPlus, child: PDFViewerChild) => {
                 // (also reported in https://github.com/RyotaUshio/obsidian-pdf-plus/issues/315)
                 // In fact, Obsidian's original `loadFile` method also has this condition check.
                 if (this.unloaded || !this.pdfViewer) {
+                    console.log('[PDFPlus] Skipping loadFile - unloaded or no PDF viewer');
                     return;
                 }
 
@@ -386,26 +393,149 @@ const patchPDFViewerChild = (plugin: PDFPlus, child: PDFViewerChild) => {
 
                 // Register post-processors
 
+                console.log('[PDFPlus] ========== Setting up annotationlayerrendered event handler ==========');
+                console.log('[PDFPlus] PDF file:', file?.path);
+                console.log('[PDFPlus] Event bus:', this.pdfViewer.eventBus);
+                console.log('[PDFPlus] Component:', this.component);
+                
                 lib.registerPDFEvent('annotationlayerrendered', this.pdfViewer.eventBus, this.component!, (data) => {
                     const { source: pageView } = data;
+                    const pageNumber = pageView.id;
+                    
+                    console.log('[PDFPlus] ========== annotationlayerrendered event fired ==========');
+                    console.log('[PDFPlus] Page number:', pageNumber);
+                    console.log('[PDFPlus] Annotation layer div:', pageView.annotationLayer?.div);
 
-                    pageView.annotationLayer?.div
-                        ?.querySelectorAll<HTMLElement>('section[data-annotation-id]')
-                        .forEach((el) => {
-                            const annotationId = el.dataset.annotationId;
-                            if (!annotationId) return;
+                    const annotations = pageView.annotationLayer?.div
+                        ?.querySelectorAll<HTMLElement>('section[data-annotation-id]');
+                    
+                    console.log('[PDFPlus] Found annotations:', annotations?.length || 0);
 
-                            const annot = pageView.annotationLayer?.annotationLayer.getAnnotation(annotationId);
-                            if (!annot) return;
+                    annotations?.forEach((el) => {
+                        const annotationId = el.dataset.annotationId;
+                        if (!annotationId) {
+                            console.log('[PDFPlus] Skipping element without annotation ID');
+                            return;
+                        }
 
-                            // Needed to avoid registering the event listeners on the same annotation container element multiple times
-                            if (annot.container.dataset.pdfPlusIsAnnotationPostProcessed === 'true') return;
+                        console.log('[PDFPlus] Processing annotation:', annotationId);
 
-                            if (annot.data.subtype === 'Link' && typeof annot.container.dataset.internalLink === 'string') {
+                        const annot = pageView.annotationLayer?.annotationLayer.getAnnotation(annotationId);
+                        if (!annot) {
+                            console.log('[PDFPlus] Annotation not found in annotation layer:', annotationId);
+                            return;
+                        }
+
+                        // Log full annotation data structure for debugging
+                        console.log('[PDFPlus] Annotation data:', {
+                            id: annotationId,
+                            subtype: annot.data.subtype,
+                            url: annot.data.url,
+                            unsafeUrl: annot.data.unsafeUrl,
+                            A: annot.data.A,
+                            dest: annot.data.dest,
+                            hasInternalLink: typeof annot.container.dataset.internalLink === 'string',
+                            internalLink: annot.container.dataset.internalLink,
+                            alreadyProcessed: annot.container.dataset.pdfPlusIsAnnotationPostProcessed === 'true',
+                            // Log all data properties to see what's actually available
+                            allDataKeys: Object.keys(annot.data),
+                            containerDataset: { ...annot.container.dataset }
+                        });
+                        
+                        // Log the full annotation object structure for deeper inspection
+                        console.log('[PDFPlus] Full annotation object inspection:', {
+                            hasData: !!annot.data,
+                            dataType: typeof annot.data,
+                            dataKeys: annot.data ? Object.keys(annot.data) : [],
+                            // Check if A exists but is in a different format
+                            hasA: 'A' in (annot.data || {}),
+                            AType: annot.data?.A ? typeof annot.data.A : 'undefined',
+                            // Check if dest exists
+                            hasDest: 'dest' in (annot.data || {}),
+                            destType: annot.data?.dest ? typeof annot.data.dest : 'undefined',
+                            // Check container structure
+                            containerTag: annot.container.tagName,
+                            containerClasses: annot.container.className,
+                            containerAttributes: Array.from(annot.container.attributes).map(attr => `${attr.name}="${attr.value}"`)
+                        });
+
+                        // Needed to avoid registering the event listeners on the same annotation container element multiple times
+                        if (annot.container.dataset.pdfPlusIsAnnotationPostProcessed === 'true') {
+                            console.log('[PDFPlus] Annotation already processed, skipping:', annotationId);
+                            return;
+                        }
+
+                        if (annot.data.subtype === 'Link') {
+                            // Check if it's an internal link (has dest or internalLink dataset)
+                            const hasInternalLinkDataset = typeof annot.container.dataset.internalLink === 'string';
+                            const hasDest = annot.data.dest !== undefined && annot.data.dest !== null;
+                            
+                            if (hasInternalLinkDataset || hasDest) {
+                                console.log('[PDFPlus] ========== Registering PDFInternalLinkPostProcessor ==========');
+                                console.log('[PDFPlus] Internal link detection:', {
+                                    hasInternalLinkDataset,
+                                    internalLink: annot.container.dataset.internalLink,
+                                    hasDest,
+                                    dest: annot.data.dest
+                                });
                                 PDFInternalLinkPostProcessor.registerEvents(plugin, this, annot);
-                            } else if (annot.data.subtype === 'Link' && annot.data.url) {
-                                PDFExternalLinkPostProcessor.registerEvents(plugin, this, annot);
+                            } else {
+                                // Check for URL/wikilink in multiple places (PDF.js might expose it differently)
+                                // PDF.js stores potentially unsafe URLs (including wikilinks) in unsafeUrl instead of url
+                                let extractedUrl: string | undefined = annot.data.url || annot.data.unsafeUrl;
+                                
+                                console.log('[PDFPlus] Initial URL check:', {
+                                    url: annot.data.url,
+                                    unsafeUrl: annot.data.unsafeUrl,
+                                    extractedUrl
+                                });
+                                
+                                // Check A.URI in various formats
+                                if (!extractedUrl && annot.data.A) {
+                                    if (typeof annot.data.A === 'object') {
+                                        const action = annot.data.A as any;
+                                        // Check various possible URI locations
+                                        if (action.URI) {
+                                            extractedUrl = typeof action.URI === 'string' ? action.URI : (action.URI.str || action.URI);
+                                        }
+                                        // Also check if URI is nested differently
+                                        if (!extractedUrl && action.S === 'URI' && action.URI) {
+                                            extractedUrl = typeof action.URI === 'string' ? action.URI : (action.URI.str || action.URI);
+                                        }
+                                    } else if (typeof annot.data.A === 'string') {
+                                        // Sometimes A might be a string directly
+                                        extractedUrl = annot.data.A;
+                                    }
+                                }
+                                
+                                // Check for wikilinks ([[...]])
+                                const isWikilink = extractedUrl && extractedUrl.startsWith('[[');
+                                
+                                console.log('[PDFPlus] ========== Checking Link annotation for external/wikilink ==========');
+                                console.log('[PDFPlus] URL extraction details:', {
+                                    annotDataUrl: annot.data.url,
+                                    annotDataUnsafeUrl: annot.data.unsafeUrl,
+                                    annotDataA: annot.data.A,
+                                    extractedUrl,
+                                    isWikilink,
+                                    annotationId,
+                                    // Deep inspection of A object
+                                    AType: typeof annot.data.A,
+                                    AKeys: annot.data.A && typeof annot.data.A === 'object' ? Object.keys(annot.data.A) : [],
+                                    AValue: annot.data.A
+                                });
+                                
+                                if (extractedUrl) {
+                                    console.log('[PDFPlus] ========== Registering PDFExternalLinkPostProcessor ==========');
+                                    console.log('[PDFPlus] URL/wikilink:', extractedUrl);
+                                    console.log('[PDFPlus] Is wikilink:', isWikilink);
+                                    PDFExternalLinkPostProcessor.registerEvents(plugin, this, annot);
+                                } else {
+                                    console.log('[PDFPlus] No URL/dest found for Link annotation, skipping:', annotationId);
+                                    console.log('[PDFPlus] This might be a broken or incomplete link annotation');
+                                }
                             }
+                        }
 
                             // Avoid rendering annotations that are replies to other annotations
                             // https://github.com/RyotaUshio/obsidian-pdf-plus/issues/68
@@ -436,8 +566,33 @@ const patchPDFViewerChild = (plugin: PDFPlus, child: PDFViewerChild) => {
                             }
 
                             annot.container.dataset.pdfPlusIsAnnotationPostProcessed = 'true';
+
+                            plugin.registerDomEvent(annot.container, 'dblclick', (evt) => {
+                                // Don't open connections modal for link annotations with URLs/wikilinks
+                                // These should open the link instead
+                                if (annot.data.subtype === 'Link') {
+                                    const url = annot.data.url || 
+                                        (annot.data.A && typeof annot.data.A === 'object' ? ((annot.data.A as any).URI?.str || (annot.data.A as any).URI) : undefined);
+                                    if (url && (url.startsWith('[[') || url.startsWith('http://') || url.startsWith('https://'))) {
+                                        // Let the external link post processor handle this
+                                        return;
+                                    }
+                                }
+                                
+                                evt.preventDefault();
+                                evt.stopPropagation();
+                                if (this.file) {
+                                    new PDFAnnotationConnectionsModal(plugin, this.file, pageView.id, annotationId).open();
+                                }
+                            });
                         });
+                    
+                    console.log('[PDFPlus] Finished processing all annotations on page', pageNumber);
+                    console.log('[PDFPlus] ========== annotationlayerrendered event handler completed ==========');
                 });
+                
+                console.log('[PDFPlus] annotationlayerrendered event handler registered successfully');
+                console.log('[PDFPlus] ========== Annotation handler setup complete ==========');
 
                 lib.registerPDFEvent(
                     'outlineloaded', this.pdfViewer.eventBus, null,

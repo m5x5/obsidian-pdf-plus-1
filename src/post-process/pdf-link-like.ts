@@ -111,6 +111,13 @@ abstract class PDFLinkLikePostProcessor implements HoverParent {
         const { app, plugin, targetEl } = this;
 
         plugin.registerDomEvent(targetEl, 'mouseover', async (event) => {
+            // Check for shift+hover first
+            if (plugin.shiftHoverManager?.isActive()) {
+                console.log('[PDFPlus ShiftHover] Shift+hover detected on link, calling handleShiftHover');
+                await this.handleShiftHover();
+                return; // Don't show normal popover
+            }
+
             if (await this.customHover(event)) return;
 
             let linktext: string | null = null;
@@ -134,6 +141,17 @@ abstract class PDFLinkLikePostProcessor implements HoverParent {
                 sourcePath: this.sourcePath
             });
         });
+
+        // Clear highlight on mouse leave
+        plugin.registerDomEvent(targetEl, 'mouseleave', () => {
+            if (plugin.shiftHoverManager?.isActive()) {
+                plugin.shiftHoverManager.clearHighlight();
+            }
+        });
+    }
+
+    async handleShiftHover(): Promise<void> {
+        // Override in subclasses that support shift+hover
     }
 
     private registerClickToRecordHistory() {
@@ -270,6 +288,44 @@ export class PDFInternalLinkPostProcessor extends PDFDestinationHolderPostProces
     onHoverPopoverSet(hoverPopover: HoverPopover): void {
         super.onHoverPopoverSet(hoverPopover);
         hoverPopover.hoverEl.addClass('pdf-plus-pdf-internal-link-popover');
+    }
+
+    async handleShiftHover(): Promise<void> {
+        console.log('[PDFPlus ShiftHover] PDFInternalLinkPostProcessor.handleShiftHover called');
+
+        if (!this.child.file) {
+            console.warn('[PDFPlus ShiftHover] No file on child');
+            return;
+        }
+
+        const dest = this.getDest();
+        console.log('[PDFPlus ShiftHover] Got dest:', dest);
+
+        const doc = this.child.pdfViewer.pdfViewer?.pdfDocument;
+        if (!doc) {
+            console.warn('[PDFPlus ShiftHover] No PDF document');
+            return;
+        }
+
+        const resolved = await this.plugin.shiftHoverManager.resolveInternalLink(
+            dest, doc, this.child.file
+        );
+
+        console.log('[PDFPlus ShiftHover] Resolved:', resolved);
+
+        // Only highlight if link points to a specific annotation
+        if (!resolved || !resolved.annotationId) {
+            console.log('[PDFPlus ShiftHover] No annotation ID in destination - nothing to highlight');
+            return;
+        }
+
+        console.log('[PDFPlus ShiftHover] Highlighting target annotation...');
+        // Same document: highlight in current viewer
+        this.plugin.shiftHoverManager.highlightAnnotation(
+            this.child,
+            resolved.page,
+            resolved.annotationId
+        );
     }
 }
 

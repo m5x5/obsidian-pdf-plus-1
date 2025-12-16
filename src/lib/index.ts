@@ -411,6 +411,9 @@ export class PDFPlusLib {
             }
             return subpath;
         }
+        if (typeof state.page === 'number') {
+            return `#page=${state.page}`;
+        }
         return null;
     }
 
@@ -421,6 +424,9 @@ export class PDFPlusLib {
             } else { // Destination type = "XYZ"
                 return [state.page - 1, 'XYZ', state.left, state.top, state.zoom ?? 0];
             }
+        }
+        if (typeof state.page === 'number') {
+            return [state.page - 1, 'XYZ', null, null, null];
         }
         return null;
     }

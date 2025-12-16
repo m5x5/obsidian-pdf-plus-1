@@ -53,26 +53,115 @@ export class PdfLibIO extends PDFPlusLibSubmodule implements IPdfIo {
     async addLinkAnnotation(file: TFile, pageNumber: number, rects: Rect[], dest: DestArray | string, colorName?: string, contents?: string) {
         return await this.process(file, (pdfDoc) => {
             const page = pdfDoc.getPage(pageNumber - 1);
-            const rgb = hexToRgb(this.plugin.settings.pdfLinkColor);
-            const { r, g, b } = rgb ?? { r: 0, g: 0, b: 0 };
+
+            let r = 0, g = 0, b = 0;
+            if (colorName) {
+                const rgb = this.plugin.domManager.getRgb(colorName);
+                r = rgb.r; g = rgb.g; b = rgb.b;
+            } else {
+                const rgb = hexToRgb(this.plugin.settings.pdfLinkColor);
+                if (rgb) { r = rgb.r; g = rgb.g; b = rgb.b; }
+            }
+
             const geometry = this.lib.highlight.geometry;
 
             let Dest;
+            let A;
             if (typeof dest === 'string') {
-                Dest = PDFString.of(dest);
+                // IMPORTANT: Preserve wikilinks as-is.
+                // The dest string is saved exactly as provided, whether it's a wikilink or external URL.
+
+                // Safety check: Detect if someone accidentally passed a JSON-encoded PDF destination
+                // This should never happen - PDF destinations should be passed as DestArray, not strings
+                if (dest.startsWith('#') || (dest.startsWith('[') && dest.includes('"num"'))) {
+                    try {
+                        const decoded = decodeURIComponent(dest);
+                        if (decoded.startsWith('#[') || decoded.startsWith('#{') || decoded.startsWith('[')) {
+                            const jsonStr = decoded.startsWith('#') ? decoded.substring(1) : decoded;
+                            const parsed = JSON.parse(jsonStr);
+                            if (Array.isArray(parsed) && parsed.length >= 2 &&
+                                (typeof parsed[0] === 'object' && 'num' in parsed[0])) {
+                                throw new Error(
+                                    `Invalid link destination: PDF destination arrays should be passed as DestArray, not as a string. ` +
+                                    `This looks like a malformed link. Please use a wikilink format like [[file.pdf#page=1]] instead.`
+                                );
+                            }
+                        }
+                    } catch (e) {
+                        // If it's our error, re-throw it
+                        if (e instanceof Error && e.message.includes('Invalid link destination')) {
+                            throw e;
+                        }
+                        // Otherwise, it's not a JSON-encoded destination, so continue normally
+                    }
+                }
+
+                A = pdfDoc.context.obj({
+                    Type: 'Action',
+                    S: 'URI',
+                    URI: PDFString.of(dest)
+                });
             } else {
                 const targetPageRef = pdfDoc.getPage(dest[0]).ref;
                 Dest = [targetPageRef, dest[1], ...dest.slice(2).map((num: number | null): PDFNumber | typeof PDFNull => typeof num === 'number' ? PDFNumber.of(num) : PDFNull)];
             }
 
-            const ref = this.addAnnotation(page, {
+            // Link annotations need a visible border to be seen (they don't support background colors like highlights)
+            // Always use border width 1 for newly created links to ensure visibility
+            // User can edit the annotation later if they want to remove the border
+            const borderWidth = 1;
+
+            const annotDict: Record<string, any> = {
                 Subtype: 'Link',
                 Rect: geometry.mergeRectangles(...rects),
                 QuadPoints: geometry.rectsToQuadPoints(rects),
-                Dest,
                 M: PDFString.fromDate(new Date()),
-                Border: [0, 0, this.plugin.settings.pdfLinkBorder ? 1 : 0],
+                Border: [0, 0, borderWidth],
                 C: [r / 255, g / 255, b / 255],
+            };
+
+            if (Dest) annotDict.Dest = Dest;
+            if (A) annotDict.A = A;
+
+            // Add H (Highlight mode) to make the link annotation more visible
+            // This makes the annotation invert when clicked
+            annotDict.H = PDFName.of('I'); // 'I' for Invert, 'O' for Outline, 'P' for Push
+
+            // Add contents if provided
+            if (contents) {
+                annotDict.Contents = PDFHexString.fromText(contents);
+            }
+
+            const ref = this.addAnnotation(page, annotDict);
+
+            const annotationID = formatAnnotationID(ref.objectNumber, ref.generationNumber);
+            return annotationID;
+        });
+    }
+
+    async addTextAnnotation(file: TFile, pageNumber: number, x: number, y: number, contents: string, colorName?: string, iconName: 'Comment' | 'Note' | 'Help' | 'Paragraph' | 'NewParagraph' | 'Insert' | 'Key' = 'Comment') {
+        if (!this.plugin.settings.author) {
+            throw new Error(`${this.plugin.manifest.name}: The author name is not set. Please set it in the plugin settings.`);
+        }
+
+        return await this.process(file, (pdfDoc) => {
+            const page = pdfDoc.getPage(pageNumber - 1);
+            const { r, g, b } = this.plugin.domManager.getRgb(colorName);
+            const iconSize = 20;  // Standard sticky note icon size in PDF points
+
+            // For Text annotations (sticky notes), refer to PDF specification:
+            // - 12.5.2 "Annotation Dictionaries"
+            // - 12.5.6.2 "Markup Annotations"
+            // - 12.5.6.4 "Text Annotations"
+            const ref = this.addAnnotation(page, {
+                Subtype: 'Text',
+                Rect: [x, y, x + iconSize, y + iconSize],
+                Name: iconName,
+                C: [r / 255, g / 255, b / 255],
+                Contents: PDFHexString.fromText(contents),
+                T: PDFHexString.fromText(this.plugin.settings.author),
+                M: PDFString.fromDate(new Date()),
+                Open: false  // Don't auto-open the popup
             });
 
             const annotationID = formatAnnotationID(ref.objectNumber, ref.generationNumber);

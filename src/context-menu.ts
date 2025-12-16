@@ -1,9 +1,9 @@
-import { Keymap, Menu, MenuItem, Notice, Platform, TFile } from 'obsidian';
+import { Component, getLinkpath, Keymap, MarkdownRenderer, Menu, MenuItem, Notice, parseLinktext, Platform, TFile } from 'obsidian';
 
 import PDFPlus from 'main';
 import { PDFOutlineItem, PDFOutlines } from 'lib/outlines';
-import { PDFOutlineMoveModal, PDFOutlineTitleModal, PDFComposerModal, PDFAnnotationDeleteModal, PDFAnnotationEditModal } from 'modals';
-import { PDFOutlineTreeNode, PDFViewerChild } from 'typings';
+import { PDFOutlineMoveModal, PDFOutlineTitleModal, PDFComposerModal, PDFAnnotationDeleteModal, PDFAnnotationEditModal, PDFLinkAnnotationModal } from 'modals';
+import { PDFOutlineTreeNode, PDFViewerChild, DestArray } from 'typings';
 import { PDFViewerBacklinkVisualizer } from 'backlink-visualizer';
 import { PDFBacklinkCache } from 'lib/pdf-backlink-index';
 import { addProductMenuItems, getSelectedItemsRecursive, fixOpenSubmenu, registerVimKeybindsToMenu } from 'utils/menu';
@@ -543,7 +543,93 @@ export class PDFPlusContextMenu extends PDFPlusMenu {
                             lib.copyLink.writeHighlightAnnotationToSelectionIntoFileAndCopyLink(false, { copyFormat, displayTextFormat }, colorName ?? undefined);
                         });
                 }
+
+                if (isVisible('write-file')) {
+                    this.addItem((item) => {
+                        item.setSection('write-file')
+                            .setTitle('Add link to selection')
+                            .setIcon('lucide-link')
+                            .onClick(async () => {
+                                if (!child.file || !selection) return;
+
+                                // Preserve selection info (in case async ops lose it)
+                                const selectionInfo = {
+                                    beginIndex: selection.beginIndex,
+                                    beginOffset: selection.beginOffset,
+                                    endIndex: selection.endIndex,
+                                    endOffset: selection.endOffset
+                                };
+
+                                // Use unified destination resolution (no fallback to view in context menu)
+                                const resolved = await lib.commands.resolveDestinationForLinkToSelection(
+                                    child.file,
+                                    undefined,
+                                    false
+                                );
+
+                                if (!resolved) {
+                                    new Notice(`${plugin.manifest.name}: No link found. Please copy a link first.`);
+                                    return;
+                                }
+
+                                const { dest, source } = resolved;
+
+                                console.log('[PDFPlus] Creating link annotation with destination:', dest, 'from source:', source);
+
+                                // Use preserved selection since async operations may have lost the DOM selection
+                                lib.highlight.writeFile.addLinkAnnotationToTextRange(child, pageNumber, selectionInfo, dest)
+                                    .then((result) => {
+                                        console.log('[PDFPlus] Link annotation created:', result);
+                                        if (result) {
+                                            const sourceMsg = source === 'lastCopied' ? 'copied PDF link' : 'clipboard';
+                                            new Notice(`${plugin.manifest.name}: Link added from ${sourceMsg}`);
+                                        } else {
+                                            new Notice(`${plugin.manifest.name}: Failed to add link annotation`);
+                                        }
+                                    })
+                                    .catch((err) => {
+                                        console.error('[PDFPlus] Error creating link annotation:', err);
+                                        new Notice(`${plugin.manifest.name}: Failed to add link annotation - ${err.message}`);
+                                    });
+                            });
+                    });
+                }
             }
+        }
+
+        // Add sticky note (doesn't require selection)
+        if (lib.isEditable(child) && isVisible('write-file')) {
+            this.addItem((item) => {
+                item.setSection('write-file')
+                    .setTitle('Add sticky note here')
+                    .setIcon('lucide-sticky-note')
+                    .onClick(async () => {
+                        if (child.file && evt) {
+                            const palette = child.palette;
+                            const colorName = palette?.selectedColorName ?? null;
+
+                            const { PDFStickyNoteModal } = await import('modals');
+                            new PDFStickyNoteModal(
+                                plugin,
+                                child,
+                                pageNumber,
+                                evt.clientX,
+                                evt.clientY,
+                                colorName,
+                                async (contents) => {
+                                    await lib.highlight.writeFile.addStickyNoteAtPosition(
+                                        child,
+                                        pageNumber,
+                                        evt.clientX,
+                                        evt.clientY,
+                                        contents,
+                                        colorName ?? undefined
+                                    );
+                                }
+                            ).open();
+                        }
+                    });
+            });
         }
 
         // Get annotation & annotated text
@@ -672,37 +758,6 @@ export class PDFPlusContextMenu extends PDFPlusMenu {
                 }
             }
         })();
-
-        // Add a PDF internal link to selection
-        if (selectedText && selection
-            && lib.isEditable(child)
-            && plugin.lastCopiedDestInfo
-            && plugin.lastCopiedDestInfo.file === child.file
-            && isVisible('link')) {
-            if ('destArray' in plugin.lastCopiedDestInfo) {
-                const destArray = plugin.lastCopiedDestInfo.destArray;
-                this.addItem((item) => {
-                    return item
-                        .setSection('link')
-                        .setTitle('Paste copied PDF link to selection')
-                        .setIcon('lucide-clipboard-paste')
-                        .onClick(() => {
-                            lib.highlight.writeFile.addLinkAnnotationToSelection(destArray);
-                        });
-                });
-            } else if ('destName' in plugin.lastCopiedDestInfo) {
-                const destName = plugin.lastCopiedDestInfo.destName;
-                this.addItem((item) => {
-                    return item
-                        .setSection('link')
-                        .setTitle('Paste copied link to selection')
-                        .setIcon('lucide-clipboard-paste')
-                        .onClick(() => {
-                            lib.highlight.writeFile.addLinkAnnotationToSelection(destName);
-                        });
-                });
-            }
-        }
 
         // copy selected text only //
         if (selectedText && isVisible('text')) {
