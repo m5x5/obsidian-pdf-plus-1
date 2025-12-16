@@ -51,6 +51,7 @@ export class PdfLibIO extends PDFPlusLibSubmodule implements IPdfIo {
     }
 
     async addLinkAnnotation(file: TFile, pageNumber: number, rects: Rect[], dest: DestArray | string, colorName?: string, contents?: string) {
+        console.log('[PDFPlus] addLinkAnnotation called with dest:', dest);
         return await this.process(file, (pdfDoc) => {
             const page = pdfDoc.getPage(pageNumber - 1);
 
@@ -68,6 +69,7 @@ export class PdfLibIO extends PDFPlusLibSubmodule implements IPdfIo {
             let Dest;
             let A;
             if (typeof dest === 'string') {
+                console.log('[PDFPlus] Saving link annotation with URL:', dest);
                 // IMPORTANT: Preserve wikilinks as-is.
                 // The dest string is saved exactly as provided, whether it's a wikilink or external URL.
 

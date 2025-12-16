@@ -1,4 +1,4 @@
-import { Constructor, EventRef, Events, FileSystemAdapter, Keymap, Menu, Notice, ObsidianProtocolData, PaneType, Platform, Plugin, SettingTab, TFile, addIcon, apiVersion, loadPdfJs, requireApiVersion } from 'obsidian';
+import { Constructor, EventRef, Events, FileSystemAdapter, Keymap, MarkdownView, Menu, Notice, ObsidianProtocolData, PaneType, Platform, Plugin, SettingTab, TFile, addIcon, apiVersion, loadPdfJs, requireApiVersion } from 'obsidian';
 import * as pdflib from '@cantoo/pdf-lib';
 
 import { patchPDFView, patchPDFInternals, patchBacklink, patchWorkspace, patchPagePreview, patchClipboardManager, patchPDFInternalFromPDFEmbed, patchMenu } from 'patchers';
@@ -701,7 +701,84 @@ export default class PDFPlus extends Plugin {
 		this.registerGlobalVariable('pdflib', pdflib, false);
 	}
 
+	private async handleMarkdownLinkShiftHover(href: string, linkEl: HTMLAnchorElement) {
+		try {
+			// href format: "Antworten (6).pdf#page=1&rect=..."
+			// Convert to wikilink format for existing resolver
+			const wikilink = `[[${decodeURIComponent(href)}]]`;
+			
+			console.log('[PDFPlus] Markdown link shift-hover:', { href, wikilink });
+			
+			// Get the source file (the markdown file containing this link)
+			const sourceView = this.app.workspace.getActiveViewOfType(MarkdownView);
+			if (!sourceView?.file) return;
+			
+			const resolved = await this.shiftHoverManager.resolveWikilink(wikilink, sourceView.file);
+			if (!resolved) return;
+			
+			const targetChild = this.shiftHoverManager.findViewerForFile(resolved.file);
+			if (!targetChild) {
+				console.log('[PDFPlus] Target PDF not open');
+				return;
+			}
+			
+			if (resolved.annotationId) {
+				this.shiftHoverManager.highlightAnnotation(
+					targetChild,
+					resolved.page,
+					resolved.annotationId
+				);
+			} else if (resolved.offset || resolved.rect) {
+				this.shiftHoverManager.highlightLocation(
+					targetChild,
+					resolved.page,
+					resolved.offset,
+					resolved.rect
+				);
+			}
+		} catch (err) {
+			console.error('[PDFPlus] Error handling markdown link shift-hover:', err);
+		}
+	}
+
 	private registerEvents() {
+		// Click support for markdown links with rect parameters
+		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
+			const target = evt.target as HTMLElement;
+			
+			// Check if it's an internal link (for wikilinks and embeds)
+			if (target.matches('a.internal-link') || target.closest('a.internal-link')) {
+				const linkEl = (target.matches('a.internal-link') ? target : target.closest('a.internal-link')) as HTMLAnchorElement;
+				const href = linkEl.getAttribute('href');
+				console.log('[PDFPlus] Link clicked:', { href });
+				
+				// Check if it's a PDF link with rect parameter
+				if (href && href.includes('.pdf') && href.includes('rect=')) {
+					console.log('[PDFPlus] PDF link with rect detected');
+					// Don't prevent default - let Obsidian handle navigation
+					// The rect should be preserved in the subpath
+				}
+			}
+		}, true); // Use capture phase to log before other handlers
+		
+		// Shift-hover support for markdown links to PDFs
+		this.registerDomEvent(document, 'mouseover', (evt: MouseEvent) => {
+			if (!this.shiftHoverManager.isActive()) return;
+			
+			const target = evt.target as HTMLElement;
+			console.log('[PDFPlus] Mouseover with shift:', target);
+			
+			// Check if it's an internal link (for wikilinks and embeds)
+			if (target.matches('a.internal-link') || target.closest('a.internal-link')) {
+				const linkEl = (target.matches('a.internal-link') ? target : target.closest('a.internal-link')) as HTMLAnchorElement;
+				const href = linkEl.getAttribute('href');
+				console.log('[PDFPlus] Found internal link:', { href, isPdf: href?.includes('.pdf') });
+				if (href && href.includes('.pdf')) {
+					this.handleMarkdownLinkShiftHover(href, linkEl);
+				}
+			}
+		});
+
 		// keep this.pdfViewerChildren up-to-date
 		this.registerEvent(this.app.workspace.on('layout-change', () => {
 			for (const pdfContainerEl of this.pdfViewerChildren.keys()) {

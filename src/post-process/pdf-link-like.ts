@@ -313,19 +313,27 @@ export class PDFInternalLinkPostProcessor extends PDFDestinationHolderPostProces
 
         console.log('[PDFPlus ShiftHover] Resolved:', resolved);
 
-        // Only highlight if link points to a specific annotation
-        if (!resolved || !resolved.annotationId) {
-            console.log('[PDFPlus ShiftHover] No annotation ID in destination - nothing to highlight');
-            return;
-        }
+        if (!resolved) return;
 
-        console.log('[PDFPlus ShiftHover] Highlighting target annotation...');
-        // Same document: highlight in current viewer
-        this.plugin.shiftHoverManager.highlightAnnotation(
-            this.child,
-            resolved.page,
-            resolved.annotationId
-        );
+        // If link points to a specific annotation, highlight that annotation
+        if (resolved.annotationId) {
+            console.log('[PDFPlus ShiftHover] Highlighting target annotation...');
+            this.plugin.shiftHoverManager.highlightAnnotation(
+                this.child,
+                resolved.page,
+                resolved.annotationId
+            );
+        }
+        // If link points to a location (offset/rect), highlight that location
+        else if (resolved.offset || resolved.rect) {
+            console.log('[PDFPlus ShiftHover] Highlighting target location...');
+            this.plugin.shiftHoverManager.highlightLocation(
+                this.child,
+                resolved.page,
+                resolved.offset,
+                resolved.rect
+            );
+        }
     }
 }
 

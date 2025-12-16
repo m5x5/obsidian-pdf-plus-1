@@ -731,3 +731,14 @@ body.pdf-plus-vim-hint-inverted {
 .annotationLayer section[data-annotation-id].shift-hover-target-highlight > * {
     opacity: 0.9;
 }
+
+/* Shift+hover location highlight (for highlighting coordinate locations, not annotations) */
+.shift-hover-location-highlight {
+    background-color: var(--interactive-accent);
+    opacity: 0.4;
+    z-index: 1000;
+    transition: opacity 0.1s ease-in-out;
+    box-shadow: 0 0 8px var(--interactive-accent);
+    border: 1px solid var(--interactive-accent);
+    box-sizing: border-box;
+}

@@ -79,10 +79,16 @@ export class PDFExternalLinkPostProcessor extends PDFPlusComponent implements Ho
             return;
         }
 
-        // Handle Obsidian wikilinks (e.g. [[file.pdf#page=1]])
+        // Handle Obsidian wikilinks and embeds (e.g. [[file.pdf#page=1]] or ![[file.pdf#page=1]])
         // IMPORTANT: Always preserve wikilinks as-is. Never convert wikilinks to obsidian:// links.
-        if (url.startsWith('[[') && url.endsWith(']]')) {
-            console.log('[PDFPlus] Detected wikilink, setting up click handler');
+        const isWikilink = url.startsWith('[[') && url.endsWith(']]');
+        const isEmbed = url.startsWith('![[') && url.endsWith(']]');
+        
+        if (isWikilink || isEmbed) {
+            console.log('[PDFPlus] Detected wikilink/embed, setting up click handler:', { isWikilink, isEmbed, url });
+            
+            // Calculate the correct slice indices: [[...]] uses (2, -2), ![[...]] uses (3, -2)
+            const startSlice = isEmbed ? 3 : 2;
             
             // PDF.js creates anchor elements for internal links but not for external URI links
             // We need to create an anchor element manually to make it clickable like internal links
@@ -149,8 +155,8 @@ export class PDFExternalLinkPostProcessor extends PDFPlusComponent implements Ho
                 evt.stopPropagation();
                 evt.stopImmediatePropagation();
                 
-                // Remove [[ and ]] and handle alias
-                let linktext = url.slice(2, -2);
+                // Remove [[ and ]] (or ![[  and ]]) and handle alias
+                let linktext = url.slice(startSlice, -2);
                 console.log('[PDFPlus] Extracted linktext before alias handling:', linktext);
                 if (linktext.includes('|')) {
                     linktext = linktext.split('|')[0];
@@ -201,7 +207,7 @@ export class PDFExternalLinkPostProcessor extends PDFPlusComponent implements Ho
                 evt.stopPropagation();
                 evt.stopImmediatePropagation();
                 // Also trigger single click to open the link
-                let linktext = url.slice(2, -2);
+                let linktext = url.slice(startSlice, -2);
                 if (linktext.includes('|')) {
                     linktext = linktext.split('|')[0];
                 }
@@ -210,13 +216,21 @@ export class PDFExternalLinkPostProcessor extends PDFPlusComponent implements Ho
             }, { capture: true });
 
             // Add shift+hover handler for wikilinks
+            console.log('[PDFPlus] Registering shift-hover handlers for wikilink annotation:', { url, annotationId: this.annot.data.id });
             this.registerDomEvent(this.annot.container, 'mouseover', async () => {
+                console.log('[PDFPlus] Mouseover on wikilink annotation:', { 
+                    url, 
+                    annotationId: this.annot.data.id,
+                    shiftActive: this.plugin.shiftHoverManager?.isActive() 
+                });
                 if (this.plugin.shiftHoverManager?.isActive()) {
+                    console.log('[PDFPlus] Calling handleShiftHoverForWikilink');
                     await this.handleShiftHoverForWikilink(url);
                 }
             });
 
             this.registerDomEvent(this.annot.container, 'mouseleave', () => {
+                console.log('[PDFPlus] Mouseleave on wikilink annotation');
                 if (this.plugin.shiftHoverManager?.isActive()) {
                     this.plugin.shiftHoverManager.clearHighlight();
                 }
@@ -327,28 +341,48 @@ export class PDFExternalLinkPostProcessor extends PDFPlusComponent implements Ho
     }
 
     async handleShiftHoverForWikilink(url: string): Promise<void> {
+        console.log('[PDFPlus] handleShiftHoverForWikilink called:', { url, hasFile: !!this.child.file });
         if (!this.child.file) return;
 
         const resolved = await this.plugin.shiftHoverManager.resolveWikilink(
             url, this.child.file
         );
 
-        // Only highlight if link points to a specific annotation
-        if (!resolved || !resolved.annotationId) return;
+        console.log('[PDFPlus] Wikilink resolved:', resolved);
 
-        // Find viewer for target file
-        const targetChild = this.plugin.shiftHoverManager.findViewerForFile(resolved.file);
-        if (!targetChild) {
-            // File not open - do nothing
+        if (!resolved) {
+            console.log('[PDFPlus] Failed to resolve wikilink');
             return;
         }
 
-        // Highlight the target annotation in the target viewer
-        this.plugin.shiftHoverManager.highlightAnnotation(
-            targetChild,
-            resolved.page,
-            resolved.annotationId
-        );
+        // Find viewer for target file
+        const targetChild = this.plugin.shiftHoverManager.findViewerForFile(resolved.file);
+        console.log('[PDFPlus] Found target viewer:', !!targetChild);
+        if (!targetChild) {
+            // File not open - do nothing
+            console.log('[PDFPlus] Target file not open');
+            return;
+        }
+
+        // If link points to a specific annotation, highlight that annotation
+        if (resolved.annotationId) {
+            console.log('[PDFPlus] Highlighting annotation:', resolved.annotationId);
+            this.plugin.shiftHoverManager.highlightAnnotation(
+                targetChild,
+                resolved.page,
+                resolved.annotationId
+            );
+        } 
+        // If link points to a location (offset/rect), highlight that location
+        else if (resolved.offset || resolved.rect) {
+            console.log('[PDFPlus] Highlighting location:', { offset: resolved.offset, rect: resolved.rect });
+            this.plugin.shiftHoverManager.highlightLocation(
+                targetChild,
+                resolved.page,
+                resolved.offset,
+                resolved.rect
+            );
+        }
     }
 
     static registerEvents(plugin: PDFPlus, child: PDFViewerChild, annot: AnnotationElement) {

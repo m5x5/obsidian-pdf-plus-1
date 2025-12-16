@@ -79,9 +79,66 @@ export class copyLinkLib extends PDFPlusLibSubmodule {
         const selectionStr = child.getTextSelectionRangeStr(pageEl);
         if (!selectionStr) return null;
 
+        // Get rect from selection for highlighting
+        const range = selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+        let rect: string | undefined;
+        let offset: string | undefined;
+        
+        if (range) {
+            const pageView = child.getPage(page);
+            if (pageView) {
+                // Get bounding rect of selection in screen coordinates
+                const domRect = range.getBoundingClientRect();
+                const pageRect = pageEl.getBoundingClientRect();
+
+                // Get padding and borders
+                const style = pageEl.win.getComputedStyle(pageEl);
+                const borderTop = parseFloat(style.borderTopWidth) || 0;
+                const borderLeft = parseFloat(style.borderLeftWidth) || 0;
+                const paddingTop = parseFloat(style.paddingTop) || 0;
+                const paddingLeft = parseFloat(style.paddingLeft) || 0;
+
+                // Convert to page-relative coordinates (accounting for padding/borders)
+                const viewportX = domRect.left - (pageRect.left + borderLeft + paddingLeft);
+                const viewportY = domRect.top - (pageRect.top + borderTop + paddingTop);
+
+                console.log('[PDFPlus CopyLink] Coordinate calculation:', {
+                    domRect: { left: domRect.left, top: domRect.top, width: domRect.width, height: domRect.height },
+                    pageRect: { left: pageRect.left, top: pageRect.top },
+                    borders: { borderLeft, borderTop },
+                    padding: { paddingLeft, paddingTop },
+                    viewportCoords: { x: viewportX, y: viewportY }
+                });
+
+                // Convert to PDF coordinates
+                const pdfTopLeft = pageView.getPagePoint(viewportX, viewportY);
+                const pdfBottomRight = pageView.getPagePoint(
+                    viewportX + domRect.width,
+                    viewportY + domRect.height
+                );
+
+                console.log('[PDFPlus CopyLink] PDF coordinates:', {
+                    pdfTopLeft,
+                    pdfBottomRight
+                });
+
+                if (pdfTopLeft && pdfBottomRight) {
+                    // PDF rect format: left,bottom,right,top
+                    rect = `${pdfTopLeft[0]},${pdfBottomRight[1]},${pdfBottomRight[0]},${pdfTopLeft[1]}`;
+
+                    // Also add offset for scroll position (use top-left of selection)
+                    offset = `${pdfTopLeft[0]},${pdfTopLeft[1]},0`;
+                    
+                    console.log('[PDFPlus CopyLink] Generated rect and offset:', { rect, offset });
+                }
+            }
+        }
+
         const subpath = paramsToSubpath({
             page,
             selection: selectionStr,
+            ...(offset && { offset }),
+            ...(rect && { rect }),
             ...subpathParams
         });
 

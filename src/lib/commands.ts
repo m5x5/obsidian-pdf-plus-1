@@ -1155,7 +1155,33 @@ export class PDFPlusCommands extends PDFPlusLibSubmodule {
         currentView?: any,
         fallbackToView: boolean = false
     ): Promise<{ dest: DestArray | string, source: 'lastCopied' | 'clipboard' | 'currentView' } | null> {
-        // 1. Check lastCopiedDestInfo first
+        // 1. Check clipboard FIRST (prioritize explicit paste over automatic lastCopied)
+        try {
+            const clipboardText = await navigator.clipboard.readText();
+            if (clipboardText && clipboardText.trim()) {
+                const trimmed = clipboardText.trim();
+
+                // Wikilink format
+                if (trimmed.startsWith('[[') && trimmed.endsWith(']]')) {
+                    return { dest: trimmed, source: 'clipboard' };
+                }
+
+                // Try to parse as linktext
+                try {
+                    const parsed = parseLinktext(trimmed);
+                    const dest = parsed.path + (parsed.subpath || '');
+                    return { dest, source: 'clipboard' };
+                } catch (e) {
+                    // Use as-is (might be a URL)
+                    return { dest: trimmed, source: 'clipboard' };
+                }
+            }
+        } catch (e) {
+            // Clipboard read failed
+            console.warn('[PDFPlus] Failed to read clipboard:', e);
+        }
+
+        // 2. Check lastCopiedDestInfo as fallback
         if (this.plugin.lastCopiedDestInfo) {
             const destInfo = this.plugin.lastCopiedDestInfo;
             const isCrossDocument = destInfo.file !== currentFile;
@@ -1180,35 +1206,9 @@ export class PDFPlusCommands extends PDFPlusLibSubmodule {
                     console.warn('[PDFPlus] Cross-document named destination not yet supported');
                 } else {
                     // Same document named destination - needs resolution but that's handled elsewhere
-                    // Fall through to clipboard for now
+                    // Fall through to fallbackToView for now
                 }
             }
-        }
-
-        // 2. Check clipboard
-        try {
-            const clipboardText = await navigator.clipboard.readText();
-            if (clipboardText && clipboardText.trim()) {
-                const trimmed = clipboardText.trim();
-
-                // Wikilink format
-                if (trimmed.startsWith('[[') && trimmed.endsWith(']]')) {
-                    return { dest: trimmed, source: 'clipboard' };
-                }
-
-                // Try to parse as linktext
-                try {
-                    const parsed = parseLinktext(trimmed);
-                    const dest = parsed.path + (parsed.subpath || '');
-                    return { dest, source: 'clipboard' };
-                } catch (e) {
-                    // Use as-is (might be a URL)
-                    return { dest: trimmed, source: 'clipboard' };
-                }
-            }
-        } catch (e) {
-            // Clipboard read failed
-            console.warn('[PDFPlus] Failed to read clipboard:', e);
         }
 
         // 3. Fallback to current view (if enabled)
